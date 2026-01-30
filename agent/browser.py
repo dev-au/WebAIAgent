@@ -15,17 +15,6 @@ class Browser:
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(headless=headless)
         self.context = await self.browser.new_context()
-        # Add the JWT cookie if needed - users might want this configurable
-        await self.context.add_cookies(
-            [
-                {
-                    "name": "jwt",
-                    "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk2MjgxNTEsImlkIjoiNjJhM2U4MTAxODk0Yjc1ZjdhYTA1N2IzIiwib3JpZ19pYXQiOjE3Njk1ODQ5NTF9.rytjte9Vr8aRYpNdnebRdI1cGxv-eN9Y_xeU46Bnp6o",
-                    "domain": "staging.hippo.uz",
-                    "path": "/",
-                }
-            ]
-        )
         self.page = await self.context.new_page()
 
     async def stop(self):
@@ -45,22 +34,6 @@ class Browser:
             pass
 
         await self.page.evaluate("""(() => {
-  const CLICKABLE_SELECTOR = `
-    a[href],
-    button,
-    [role="button"],
-    [role="menuitem"],
-    [onclick],
-    input[type="button"],
-    input[type="submit"],
-    input:not([type="hidden"]),
-    textarea,
-    [contenteditable="true"],
-    [role="textbox"],
-    [role="searchbox"],
-    [role="combobox"]
-  `;
-
   function domPath(el, depth = 4) {
     const path = [];
     while (el && path.length < depth) {
@@ -72,45 +45,45 @@ class Browser:
     return path.join(">");
   }
 
-  async function hash(str) {
-    const buf = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(str)
-    );
-    return [...new Uint8Array(buf)]
-      .slice(0, 6)
-      .map(b => b.toString(16).padStart(2, "0"))
-      .join("");
+  function hash(str) {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+    }
+    return (h >>> 0).toString(16).slice(0, 12);
   }
 
-  async function annotate(el) {
+  function annotate(el) {
     if (el.dataset.aiId) return;
+
     const fp = [
       el.tagName.toLowerCase(),
       el.getAttribute("role") || "",
-      el.innerText?.trim().slice(0, 50) || "",
+      el.innerText?.trim().slice(0, 30) || "",
       el.getAttribute("href") || "",
       domPath(el)
     ].join("|");
-    el.dataset.aiId = await hash(fp);
+
+    el.dataset.aiId = hash(fp);
   }
 
-  // annotate existing elements
-  (async () => {
-    const els = document.querySelectorAll(CLICKABLE_SELECTOR);
-    for (const el of els) await annotate(el);
-  })();
+  // existing DOM
+  document.querySelectorAll("*").forEach(annotate);
 
-  // observe new elements
+  // future DOM
   new MutationObserver(muts => {
-    muts.forEach(m =>
-      m.addedNodes.forEach(n => {
-        if (n.nodeType !== 1) return;
-        if (n.matches(CLICKABLE_SELECTOR)) annotate(n);
-        n.querySelectorAll?.(CLICKABLE_SELECTOR).forEach(el => annotate(el));
-      })
-    );
-  }).observe(document.body, { childList: true, subtree: true });
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        annotate(n);
+        n.querySelectorAll("*").forEach(annotate);
+      }
+    }
+  }).observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
 })();
 """)
 
